@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bílasölur – extra specs",
-  "version": "1.4",
+  "version": "1.6",
   "description": "Adds horsepower, city fuel consumption, and last updated date to bilasolur.is listings. Click the toolbar icon to toggle on/off.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["https://bilasolur.is/*"],
@@ -18,5 +18,10 @@
       "css": ["styles.css"],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }

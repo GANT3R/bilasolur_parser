@@ -67,19 +67,33 @@
   }
 
   function extractHorsepower(detailsDoc) {
-    const bodyText = detailsDoc.body ? (detailsDoc.body.innerText || detailsDoc.body.textContent || "") : "";
-    if (!bodyText) return null;
+  const bodyText = detailsDoc.body
+    ? detailsDoc.body.innerText || detailsDoc.body.textContent || ""
+    : "";
 
-    const headerIndex = bodyText.search(/\bVél\b/i);
-    if (headerIndex >= 0) {
-      const windowText = bodyText.slice(headerIndex, headerIndex + 1200);
-      const match = windowText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
-      if (match) return `${match[1]} horsepower`;
+  if (!bodyText) return null;
+
+  const headerIndex = bodyText.search(/\bVél\b/i);
+
+  if (headerIndex >= 0) {
+    const windowText = bodyText.slice(headerIndex, headerIndex + 1200);
+    const match = windowText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+
+    if (match) {
+      const value = parseInt(match[1], 10);
+      return `${value} ${value === 1 ? "hestafl" : "hestöfl"}`;
     }
-
-    const fallback = bodyText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
-    return fallback ? `${fallback[1]} horsepower` : null;
   }
+
+  const fallback = bodyText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+
+  if (fallback) {
+    const value = parseInt(fallback[1], 10);
+    return `${value} ${value === 1 ? "hestafl" : "hestöfl"}`;
+  }
+
+  return null;
+}
 
   function extractCityConsumption(detailsDoc) {
     const text = normalizeText(detailsDoc.body?.textContent || "");
