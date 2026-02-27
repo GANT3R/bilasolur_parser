@@ -5,7 +5,7 @@ Chrome extension that enhances car listings on **bilasolur.is** by adding extra 
 ## Features
 
 - Adds a small block to each listing card with:
-  - **Vél:** horsepower (e.g. `90 horsepower`)
+  - **Vél:** horsepower (e.g. `90 hestafl`)
   - **Eldsneyti (inni):** city consumption (e.g. `3.9 l/100km`)
   - **Síðast uppfært:** last updated date (e.g. `2.2.2026`)
 - **Rate-friendly loading**
