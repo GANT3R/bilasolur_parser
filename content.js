@@ -11,7 +11,7 @@
   const queue = [];
   const seenCards = new WeakSet();
 
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -20,7 +20,9 @@
     console.warn(LOG_PREFIX, ...args);
   }
 
-  function now() { return Date.now(); }
+  function now() {
+    return Date.now();
+  }
 
   function getSessionCache(url) {
     try {
@@ -50,18 +52,16 @@
   }
 
   // Finds "Label" then returns the next meaningful text near it (sibling / next cell / next node)
-  function findValueNearLabel(root, labelText) {
-    const all = root.querySelectorAll("body *");
-    const label = [...all].find(n => normalizeSpaces(n.textContent) === labelText);
+  function findValueNearLabel(doc, labelText) {
+    const all = doc.querySelectorAll("body *");
+    const label = [...all].find((n) => normalizeSpaces(n.textContent) === labelText);
     if (!label) return null;
 
-    // Try nextElementSibling
     if (label.nextElementSibling) {
       const t = textOf(label.nextElementSibling);
       if (t) return t;
     }
 
-    // Try parent row: <tr><td>Label</td><td>Value</td></tr>
     const tr = label.closest("tr");
     if (tr) {
       const tds = tr.querySelectorAll("td, th");
@@ -71,7 +71,6 @@
       }
     }
 
-    // Try next nodes (limited)
     let node = label;
     for (let i = 0; i < 8; i++) {
       node = node.nextSibling;
@@ -84,20 +83,19 @@
   }
 
   function parseHorsepower(doc) {
-    // Typically: "Vél" then a line like "222 hestöfl" :contentReference[oaicite:4]{index=4}
     const v = findValueNearLabel(doc, "Vél");
     if (!v) return null;
 
-    // If value contains "hestöfl" already, keep it.
     const m = v.match(/(\d+)\s*hestöfl/i);
     if (m) return `${m[1]} horsepower`;
 
-    // Else just return cleaned
+    const n = v.match(/(\d+)/);
+    if (n) return `${n[1]} horsepower`;
+
     return v;
   }
 
   function parseCityConsumption(doc) {
-    // City consumption on bilasolur often appears as "Innanbæjareyðsla 5,6 l/100km" :contentReference[oaicite:5]{index=5}
     const bodyText = normalizeSpaces(doc.body?.textContent || "");
 
     const m =
@@ -106,20 +104,17 @@
 
     if (!m) return null;
 
-    // Use dot as decimal separator in output
     const val = m[1].replace(",", ".");
     return `${val} l/100km`;
   }
 
   function parseLastUpdated(doc) {
-    // "Síðast uppfært 26.2.2026" :contentReference[oaicite:6]{index=6}
     const bodyText = normalizeSpaces(doc.body?.textContent || "");
     const m = bodyText.match(/Síðast uppfært\s*([0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4})/i);
     return m ? m[1] : null;
   }
 
   function parseTireSet(doc) {
-    // Examples found: "4 sumardekk", "4 nagladekk" :contentReference[oaicite:7]{index=7}
     const bodyText = normalizeSpaces(doc.body?.textContent || "");
 
     const m =
@@ -137,11 +132,9 @@
   }
 
   async function fetchAndParse(detailsUrl) {
-    // memory cache
     const inMem = memCache.get(detailsUrl);
-    if (inMem && (now() - inMem.ts) <= CACHE_TTL_MS) return inMem.data;
+    if (inMem && now() - inMem.ts <= CACHE_TTL_MS) return inMem.data;
 
-    // session cache
     const inSess = getSessionCache(detailsUrl);
     if (inSess) {
       memCache.set(detailsUrl, inSess);
@@ -158,11 +151,10 @@
       horsepower: parseHorsepower(doc),
       cityConsumption: parseCityConsumption(doc),
       tireSet: parseTireSet(doc),
-      lastUpdated: parseLastUpdated(doc)
+      lastUpdated: parseLastUpdated(doc),
     };
 
-    const cached = { ts: now(), data };
-    memCache.set(detailsUrl, cached);
+    memCache.set(detailsUrl, { ts: now(), data });
     setSessionCache(detailsUrl, data);
 
     return data;
@@ -172,40 +164,43 @@
     const box = document.createElement("div");
     box.className = "ks-extraBox";
 
-    const line = document.createElement("div");
-    line.className = "ks-extraLine";
+    const row1 = document.createElement("div");
+    row1.className = "ks-extraRow";
+    row1.innerHTML = `<span class="ks-extraKey">Vél:</span> ${
+      data.horsepower || '<span class="ks-extraMuted">—</span>'
+    }`;
 
-    // Required output style (example):
-    // Vél: 101 horsepower
-    // Eldsneyti (inni): 6.6 l/100km
-    const hp = document.createElement("span");
-    hp.className = "ks-badge";
-    hp.innerHTML = `<span class="ks-extraKey">Vél:</span> ${data.horsepower || '<span class="ks-extraMuted">—</span>'}`;
-    line.appendChild(hp);
+    const row2 = document.createElement("div");
+    row2.className = "ks-extraRow";
+    row2.innerHTML = `<span class="ks-extraKey">Eldsneyti (inni):</span> ${
+      data.cityConsumption || '<span class="ks-extraMuted">—</span>'
+    }`;
 
-    const cc = document.createElement("span");
-    cc.className = "ks-badge";
-    cc.innerHTML = `<span class="ks-extraKey">Eldsneyti (inni):</span> ${data.cityConsumption || '<span class="ks-extraMuted">—</span>'}`;
-    line.appendChild(cc);
+    const row3 = document.createElement("div");
+    row3.className = "ks-extraRow";
+    row3.innerHTML = `<span class="ks-extraKey">Síðast uppfært:</span> ${
+      data.lastUpdated || '<span class="ks-extraMuted">—</span>'
+    }`;
 
-    // You said Hjólabúnaður does NOT have to be shown — keep parsed value only for future use.
-    // If you later want it visible, uncomment:
-    // const ts = document.createElement("span");
-    // ts.className = "ks-badge";
-    // ts.innerHTML = `<span class="ks-extraKey">Hjólabúnaður:</span> ${data.tireSet || '<span class="ks-extraMuted">—</span>'}`;
-    // line.appendChild(ts);
+    box.appendChild(row1);
+    box.appendChild(row2);
+    box.appendChild(row3);
 
-    const upd = document.createElement("div");
-    upd.style.marginTop = "6px";
-    upd.innerHTML = `<span class="ks-extraKey">Síðast uppfært:</span> ${data.lastUpdated || '<span class="ks-extraMuted">—</span>'}`;
-
-    box.appendChild(line);
-    box.appendChild(upd);
     return box;
   }
 
+  function ensureLoadingIndicator(cardEl) {
+    let el = cardEl.querySelector(".ks-loading");
+    if (el) return el;
+
+    el = document.createElement("div");
+    el.className = "ks-loading";
+    el.innerHTML = `<span class="ks-spinner"></span>Loading…`;
+    cardEl.appendChild(el);
+    return el;
+  }
+
   function findCardContainer(anchor) {
-    // Heuristic: try common containers, fallback to a reasonable parent.
     return (
       anchor.closest("article") ||
       anchor.closest("li") ||
@@ -228,7 +223,6 @@
       const job = queue.shift();
       if (!job || !job.cardEl?.isConnected) continue;
 
-      // Avoid duplicate work per card
       if (seenCards.has(job.cardEl)) continue;
       seenCards.add(job.cardEl);
 
@@ -237,19 +231,23 @@
         try {
           await sleep(REQUEST_DELAY_MS);
 
+          const loadingEl = ensureLoadingIndicator(job.cardEl);
+
           log("Fetching details:", job.detailsUrl);
           const data = await fetchAndParse(job.detailsUrl);
+
+          if (loadingEl && loadingEl.isConnected) loadingEl.remove();
 
           const existing = job.cardEl.querySelector(".ks-extraBox");
           if (existing) existing.remove();
 
           const box = makeExtraBox(data);
-
-          // Insert near the link/card content (append at end is safest)
           job.cardEl.appendChild(box);
 
           log("Injected:", job.detailsUrl, data);
         } catch (e) {
+          const loadingEl = job.cardEl?.querySelector(".ks-loading");
+          if (loadingEl) loadingEl.remove();
           warn("Failed:", job.detailsUrl, e);
         } finally {
           active--;
@@ -260,9 +258,8 @@
   }
 
   function scanAndQueue() {
-    // Collect unique CarDetails links visible on the page
     const anchors = [...document.querySelectorAll('a[href*="CarDetails.aspx"]')];
-    const uniq = new Map(); // url -> anchor
+    const uniq = new Map();
 
     for (const a of anchors) {
       const href = a.getAttribute("href");
@@ -276,17 +273,14 @@
       if (!card) continue;
       if (card.querySelector(".ks-extraBox")) continue;
 
-      // Load gradually when browser is idle
       const schedule = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
       schedule(() => enqueue(url, card));
     }
   }
 
-  // Initial scan
   log("Initialized on", location.href);
   scanAndQueue();
 
-  // Handle dynamically added results
   const mo = new MutationObserver(() => scanAndQueue());
   mo.observe(document.documentElement, { childList: true, subtree: true });
 })();

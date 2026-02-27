@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bílasölur – extra specs on list",
-  "version": "1.0.0",
+  "version": "1.1",
   "description": "Adds horsepower, city fuel consumption, tire set and last updated date to bilasolur.is listings.",
   "host_permissions": ["https://bilasolur.is/*"],
   "content_scripts": [
