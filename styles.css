@@ -1,0 +1,30 @@
+.ks-extraBox {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.04);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.ks-extraLine {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ks-extraKey {
+  font-weight: 600;
+}
+
+.ks-extraMuted {
+  opacity: 0.75;
+}
+
+.ks-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.06);
+}
