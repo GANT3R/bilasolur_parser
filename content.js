@@ -72,7 +72,7 @@
     }
 
     let node = label;
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       node = node.nextSibling;
       if (!node) break;
       const t = normalizeSpaces(node.textContent || "");
@@ -82,17 +82,36 @@
     return null;
   }
 
+  /**
+   * FIXED:
+   * Some pages list features under "Vél" before horsepower (e.g. "Start/stop búnaður", then "90 hestöfl").
+   * So we must NOT take "the value next to Vél". We must find the FIRST "<number> hestöfl/hestafl" after the "Vél" section.
+   */
   function parseHorsepower(doc) {
+    const bodyText = normalizeSpaces(doc.body?.textContent || "");
+    if (!bodyText) return null;
+
+    // 1) Anchor near the "Vél" header, then look for horsepower in a bounded window
+    // Example text becomes: "Vél Start/stop búnaður 90 hestöfl Slagrými ..."
+    const idx = bodyText.search(/\bVél\b/i);
+    if (idx >= 0) {
+      const windowText = bodyText.slice(idx, idx + 700);
+      const m = windowText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+      if (m) return `${m[1]} horsepower`;
+    }
+
+    // 2) Fallback: scan any horsepower mention in the whole page (rare but better than wrong string)
+    const m2 = bodyText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+    if (m2) return `${m2[1]} horsepower`;
+
+    // 3) Last-resort fallback: sometimes "Vél" might be inside a table, and the next cell is already "### hestöfl"
     const v = findValueNearLabel(doc, "Vél");
-    if (!v) return null;
+    if (v) {
+      const m3 = v.match(/(\d{2,4})\s*hest(?:ö|a)fl/i) || v.match(/\b(\d{2,4})\b/);
+      if (m3) return `${m3[1]} horsepower`;
+    }
 
-    const m = v.match(/(\d+)\s*hestöfl/i);
-    if (m) return `${m[1]} horsepower`;
-
-    const n = v.match(/(\d+)/);
-    if (n) return `${n[1]} horsepower`;
-
-    return v;
+    return null;
   }
 
   function parseCityConsumption(doc) {
