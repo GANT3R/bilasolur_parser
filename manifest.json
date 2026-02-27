@@ -1,17 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Bílasölur – extra specs on list",
-  "version": "1.3",
-  "description": "Adds horsepower, city fuel consumption, tire set and last updated date to bilasolur.is listings.",
+  "name": "Bílasölur – extra specs",
+  "version": "1.4",
+  "description": "Adds horsepower, city fuel consumption, and last updated date to bilasolur.is listings. Click the toolbar icon to toggle on/off.",
+  "permissions": ["storage", "tabs"],
   "host_permissions": ["https://bilasolur.is/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Bílasölur extra specs"
+  },
   "content_scripts": [
     {
-      "matches": [
-        "https://bilasolur.is/SearchResults.aspx*",
-        "https://bilasolur.is/Section.aspx*",
-        "https://bilasolur.is/default.aspx/Section.aspx*",
-        "https://bilasolur.is/defaultbilasolur.aspx/Section.aspx*"
-      ],
+      "matches": ["https://bilasolur.is/", "https://bilasolur.is/*"],
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_idle"

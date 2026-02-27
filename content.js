@@ -1,305 +1,329 @@
 (() => {
   "use strict";
 
-  const LOG_PREFIX = "[BILASOLUR-EXTRA]";
-  const MAX_CONCURRENCY = 2;     // rate-friendly
-  const REQUEST_DELAY_MS = 350;  // small spacing between requests
-  const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes in sessionStorage
+  const CONFIG = {
+    logPrefix: "[BILASOLUR-EXTRA]",
+    maxConcurrentRequests: 2,
+    requestSpacingMs: 350,
+    cacheTtlMs: 10 * 60 * 1000,
+    storageDefaults: { enabled: true },
+    debounceScanMs: 150
+  };
 
-  const memCache = new Map(); // url -> {ts, data}
-  let active = 0;
-  const queue = [];
-  const seenCards = new WeakSet();
+  const runtimeState = {
+    enabled: true,
+    inFlight: 0,
+    jobQueue: [],
+    processedCards: new WeakSet(),
+    memoryCache: new Map(),
+    mutationObserver: null,
+    scanDebounceTimer: null
+  };
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const now = () => Date.now();
+  const normalizeText = (s) => (s || "").replace(/\s+/g, " ").trim();
 
-  function log(...args) {
-    console.log(LOG_PREFIX, ...args);
-  }
-  function warn(...args) {
-    console.warn(LOG_PREFIX, ...args);
-  }
+  const log = (...args) => console.log(CONFIG.logPrefix, ...args);
+  const warn = (...args) => console.warn(CONFIG.logPrefix, ...args);
 
-  function now() {
-    return Date.now();
-  }
-
-  function getSessionCache(url) {
+  function readSessionCache(url) {
     try {
       const raw = sessionStorage.getItem("ks_cache_" + url);
       if (!raw) return null;
-      const obj = JSON.parse(raw);
-      if (!obj || !obj.ts || !obj.data) return null;
-      if (now() - obj.ts > CACHE_TTL_MS) return null;
-      return obj;
+
+      const parsed = JSON.parse(raw);
+      if (!parsed?.ts || !parsed?.data) return null;
+      if (now() - parsed.ts > CONFIG.cacheTtlMs) return null;
+
+      return parsed.data;
     } catch {
       return null;
     }
   }
 
-  function setSessionCache(url, data) {
+  function writeSessionCache(url, data) {
     try {
       sessionStorage.setItem("ks_cache_" + url, JSON.stringify({ ts: now(), data }));
     } catch {}
   }
 
-  function normalizeSpaces(s) {
-    return (s || "").replace(/\s+/g, " ").trim();
-  }
+  function cacheGet(url) {
+    const mem = runtimeState.memoryCache.get(url);
+    if (mem && now() - mem.ts <= CONFIG.cacheTtlMs) return mem.data;
 
-  function textOf(el) {
-    return normalizeSpaces(el?.textContent || "");
-  }
-
-  // Finds "Label" then returns the next meaningful text near it (sibling / next cell / next node)
-  function findValueNearLabel(doc, labelText) {
-    const all = doc.querySelectorAll("body *");
-    const label = [...all].find((n) => normalizeSpaces(n.textContent) === labelText);
-    if (!label) return null;
-
-    if (label.nextElementSibling) {
-      const t = textOf(label.nextElementSibling);
-      if (t) return t;
-    }
-
-    const tr = label.closest("tr");
-    if (tr) {
-      const tds = tr.querySelectorAll("td, th");
-      if (tds.length >= 2) {
-        const t = textOf(tds[1]);
-        if (t) return t;
-      }
-    }
-
-    let node = label;
-    for (let i = 0; i < 12; i++) {
-      node = node.nextSibling;
-      if (!node) break;
-      const t = normalizeSpaces(node.textContent || "");
-      if (t) return t;
+    const sessionData = readSessionCache(url);
+    if (sessionData) {
+      runtimeState.memoryCache.set(url, { ts: now(), data: sessionData });
+      return sessionData;
     }
 
     return null;
   }
 
-  /**
-   * FIXED:
-   * Some pages list features under "Vél" before horsepower (e.g. "Start/stop búnaður", then "90 hestöfl").
-   * So we must NOT take "the value next to Vél". We must find the FIRST "<number> hestöfl/hestafl" after the "Vél" section.
-   */
-  function parseHorsepower(doc) {
-    const bodyText = normalizeSpaces(doc.body?.textContent || "");
+  function cacheSet(url, data) {
+    runtimeState.memoryCache.set(url, { ts: now(), data });
+    writeSessionCache(url, data);
+  }
+
+  function extractHorsepower(detailsDoc) {
+    const bodyText = detailsDoc.body ? (detailsDoc.body.innerText || detailsDoc.body.textContent || "") : "";
     if (!bodyText) return null;
 
-    // 1) Anchor near the "Vél" header, then look for horsepower in a bounded window
-    // Example text becomes: "Vél Start/stop búnaður 90 hestöfl Slagrými ..."
-    const idx = bodyText.search(/\bVél\b/i);
-    if (idx >= 0) {
-      const windowText = bodyText.slice(idx, idx + 700);
-      const m = windowText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
-      if (m) return `${m[1]} horsepower`;
+    const headerIndex = bodyText.search(/\bVél\b/i);
+    if (headerIndex >= 0) {
+      const windowText = bodyText.slice(headerIndex, headerIndex + 1200);
+      const match = windowText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+      if (match) return `${match[1]} horsepower`;
     }
 
-    // 2) Fallback: scan any horsepower mention in the whole page (rare but better than wrong string)
-    const m2 = bodyText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
-    if (m2) return `${m2[1]} horsepower`;
-
-    // 3) Last-resort fallback: sometimes "Vél" might be inside a table, and the next cell is already "### hestöfl"
-    const v = findValueNearLabel(doc, "Vél");
-    if (v) {
-      const m3 = v.match(/(\d{2,4})\s*hest(?:ö|a)fl/i) || v.match(/\b(\d{2,4})\b/);
-      if (m3) return `${m3[1]} horsepower`;
-    }
-
-    return null;
+    const fallback = bodyText.match(/(\d{2,4})\s*hest(?:ö|a)fl/i);
+    return fallback ? `${fallback[1]} horsepower` : null;
   }
 
-  function parseCityConsumption(doc) {
-    const bodyText = normalizeSpaces(doc.body?.textContent || "");
+  function extractCityConsumption(detailsDoc) {
+    const text = normalizeText(detailsDoc.body?.textContent || "");
+    const match =
+      text.match(/Innanbæjareyðsla\s*([0-9]+(?:[.,][0-9]+)?)\s*l\s*\/\s*100\s*km/i) ||
+      text.match(/Innanbæjareyðsla\s*([0-9]+(?:[.,][0-9]+)?)\s*l\/100km/i);
 
-    const m =
-      bodyText.match(/Innanbæjareyðsla\s*([0-9]+(?:[.,][0-9]+)?)\s*l\s*\/\s*100\s*km/i) ||
-      bodyText.match(/Innanbæjareyðsla\s*([0-9]+(?:[.,][0-9]+)?)\s*l\/100km/i);
-
-    if (!m) return null;
-
-    const val = m[1].replace(",", ".");
-    return `${val} l/100km`;
+    if (!match) return null;
+    return `${match[1].replace(",", ".")} l/100km`;
   }
 
-  function parseLastUpdated(doc) {
-    const bodyText = normalizeSpaces(doc.body?.textContent || "");
-    const m = bodyText.match(/Síðast uppfært\s*([0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4})/i);
-    return m ? m[1] : null;
+  function extractLastUpdated(detailsDoc) {
+    const text = normalizeText(detailsDoc.body?.textContent || "");
+    const match = text.match(/Síðast uppfært\s*([0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4})/i);
+    return match ? match[1] : null;
   }
 
-  function parseTireSet(doc) {
-    const bodyText = normalizeSpaces(doc.body?.textContent || "");
+  function extractTireSet(detailsDoc) {
+    const text = normalizeText(detailsDoc.body?.textContent || "");
+    const match =
+      text.match(/\b4\s+(sumardekk|nagladekk|heilsársdekk|vetrardekk)\b/i) ||
+      text.match(/\b4\s+(all-?season\s+tires|winter\s+tires|summer\s+tires)\b/i);
 
-    const m =
-      bodyText.match(/\b4\s+(sumardekk|nagladekk|heilsársdekk|vetrardekk)\b/i) ||
-      bodyText.match(/\b4\s+(all-?season\s+tires|winter\s+tires|summer\s+tires)\b/i);
+    if (!match) return null;
 
-    if (!m) return null;
-
-    const raw = m[1].toLowerCase();
+    const raw = match[1].toLowerCase();
     if (raw.includes("nagla")) return "4 winter tires (studded)";
     if (raw.includes("vetr")) return "4 winter tires";
     if (raw.includes("sumar")) return "4 summer tires";
     if (raw.includes("heils")) return "4 all-season tires";
-    return `4 ${m[1]}`;
+    return `4 ${match[1]}`;
   }
 
-  async function fetchAndParse(detailsUrl) {
-    const inMem = memCache.get(detailsUrl);
-    if (inMem && now() - inMem.ts <= CACHE_TTL_MS) return inMem.data;
+  async function fetchCarDetailsData(detailsUrl) {
+    const cached = cacheGet(detailsUrl);
+    if (cached) return cached;
 
-    const inSess = getSessionCache(detailsUrl);
-    if (inSess) {
-      memCache.set(detailsUrl, inSess);
-      return inSess.data;
-    }
+    const response = await fetch(detailsUrl, { credentials: "include" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    const resp = await fetch(detailsUrl, { credentials: "include" });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-    const html = await resp.text();
+    const html = await response.text();
     const doc = new DOMParser().parseFromString(html, "text/html");
 
     const data = {
-      horsepower: parseHorsepower(doc),
-      cityConsumption: parseCityConsumption(doc),
-      tireSet: parseTireSet(doc),
-      lastUpdated: parseLastUpdated(doc),
+      horsepower: extractHorsepower(doc),
+      cityConsumption: extractCityConsumption(doc),
+      lastUpdated: extractLastUpdated(doc),
+      tireSet: extractTireSet(doc)
     };
 
-    memCache.set(detailsUrl, { ts: now(), data });
-    setSessionCache(detailsUrl, data);
-
+    cacheSet(detailsUrl, data);
     return data;
   }
 
-  function makeExtraBox(data) {
+  function createInfoBox(data) {
     const box = document.createElement("div");
     box.className = "ks-extraBox";
 
-    const row1 = document.createElement("div");
-    row1.className = "ks-extraRow";
-    row1.innerHTML = `<span class="ks-extraKey">Vél:</span> ${
-      data.horsepower || '<span class="ks-extraMuted">—</span>'
-    }`;
+    const makeRow = (label, value) => {
+      const row = document.createElement("div");
+      row.className = "ks-extraRow";
+      row.innerHTML = `<span class="ks-extraKey">${label}</span> ${
+        value || '<span class="ks-extraMuted">—</span>'
+      }`;
+      return row;
+    };
 
-    const row2 = document.createElement("div");
-    row2.className = "ks-extraRow";
-    row2.innerHTML = `<span class="ks-extraKey">Eldsneyti (inni):</span> ${
-      data.cityConsumption || '<span class="ks-extraMuted">—</span>'
-    }`;
-
-    const row3 = document.createElement("div");
-    row3.className = "ks-extraRow";
-    row3.innerHTML = `<span class="ks-extraKey">Síðast uppfært:</span> ${
-      data.lastUpdated || '<span class="ks-extraMuted">—</span>'
-    }`;
-
-    box.appendChild(row1);
-    box.appendChild(row2);
-    box.appendChild(row3);
+    box.appendChild(makeRow("Vél:", data.horsepower));
+    box.appendChild(makeRow("Eldsneyti (inni):", data.cityConsumption));
+    box.appendChild(makeRow("Síðast uppfært:", data.lastUpdated));
 
     return box;
   }
 
-  function ensureLoadingIndicator(cardEl) {
-    let el = cardEl.querySelector(".ks-loading");
-    if (el) return el;
+  function ensureLoadingIndicator(container) {
+    const existing = container.querySelector(".ks-loading");
+    if (existing) return existing;
 
-    el = document.createElement("div");
+    const el = document.createElement("div");
     el.className = "ks-loading";
     el.innerHTML = `<span class="ks-spinner"></span>Loading…`;
-    cardEl.appendChild(el);
+    container.appendChild(el);
     return el;
   }
 
-  function findCardContainer(anchor) {
+  function removeInjectedUi(container) {
+    container.querySelector(".ks-loading")?.remove();
+    container.querySelector(".ks-extraBox")?.remove();
+  }
+
+  function removeAllInjectedUi() {
+    document.querySelectorAll(".ks-loading, .ks-extraBox").forEach((n) => n.remove());
+  }
+
+  function findListingContainer(detailsLink) {
     return (
-      anchor.closest("article") ||
-      anchor.closest("li") ||
-      anchor.closest(".result") ||
-      anchor.closest(".results") ||
-      anchor.closest(".car") ||
-      anchor.closest(".item") ||
-      anchor.closest("tr") ||
-      anchor.parentElement
+      detailsLink.closest("article") ||
+      detailsLink.closest("li") ||
+      detailsLink.closest(".result") ||
+      detailsLink.closest(".results") ||
+      detailsLink.closest(".car") ||
+      detailsLink.closest(".item") ||
+      detailsLink.closest("tr") ||
+      detailsLink.parentElement
     );
   }
 
-  function enqueue(detailsUrl, cardEl) {
-    queue.push({ detailsUrl, cardEl });
-    pump();
+  function getUniqueDetailsLinksOnPage() {
+    const anchors = [...document.querySelectorAll('a[href*="CarDetails.aspx"]')];
+    const unique = new Map();
+
+    for (const a of anchors) {
+      const href = a.getAttribute("href");
+      if (!href) continue;
+
+      const url = new URL(href, location.href).toString();
+      if (!unique.has(url)) unique.set(url, a);
+    }
+
+    return unique;
   }
 
-  async function pump() {
-    while (active < MAX_CONCURRENCY && queue.length) {
-      const job = queue.shift();
-      if (!job || !job.cardEl?.isConnected) continue;
+  function enqueueJob(detailsUrl, container) {
+    if (!runtimeState.enabled) return;
+    runtimeState.jobQueue.push({ detailsUrl, container });
+    processQueue();
+  }
 
-      if (seenCards.has(job.cardEl)) continue;
-      seenCards.add(job.cardEl);
+  async function processQueue() {
+    if (!runtimeState.enabled) return;
 
-      active++;
+    while (
+      runtimeState.enabled &&
+      runtimeState.inFlight < CONFIG.maxConcurrentRequests &&
+      runtimeState.jobQueue.length
+    ) {
+      const job = runtimeState.jobQueue.shift();
+      if (!job?.container?.isConnected) continue;
+      if (runtimeState.processedCards.has(job.container)) continue;
+
+      runtimeState.processedCards.add(job.container);
+      runtimeState.inFlight += 1;
+
       (async () => {
         try {
-          await sleep(REQUEST_DELAY_MS);
+          await sleep(CONFIG.requestSpacingMs);
+          if (!runtimeState.enabled) return;
 
-          const loadingEl = ensureLoadingIndicator(job.cardEl);
+          const loadingEl = ensureLoadingIndicator(job.container);
 
           log("Fetching details:", job.detailsUrl);
-          const data = await fetchAndParse(job.detailsUrl);
+          const data = await fetchCarDetailsData(job.detailsUrl);
 
-          if (loadingEl && loadingEl.isConnected) loadingEl.remove();
+          if (!runtimeState.enabled) return;
 
-          const existing = job.cardEl.querySelector(".ks-extraBox");
-          if (existing) existing.remove();
+          if (loadingEl.isConnected) loadingEl.remove();
 
-          const box = makeExtraBox(data);
-          job.cardEl.appendChild(box);
+          job.container.querySelector(".ks-extraBox")?.remove();
+          job.container.appendChild(createInfoBox(data));
 
           log("Injected:", job.detailsUrl, data);
         } catch (e) {
-          const loadingEl = job.cardEl?.querySelector(".ks-loading");
-          if (loadingEl) loadingEl.remove();
-          warn("Failed:", job.detailsUrl, e);
+          removeInjectedUi(job.container);
+          warn("Failed:", job?.detailsUrl, e);
         } finally {
-          active--;
-          pump();
+          runtimeState.inFlight -= 1;
+          if (runtimeState.enabled) processQueue();
         }
       })();
     }
   }
 
-  function scanAndQueue() {
-    const anchors = [...document.querySelectorAll('a[href*="CarDetails.aspx"]')];
-    const uniq = new Map();
+  function scheduleScan() {
+    if (!runtimeState.enabled) return;
 
-    for (const a of anchors) {
-      const href = a.getAttribute("href");
-      if (!href) continue;
-      const url = new URL(href, location.href).toString();
-      if (!uniq.has(url)) uniq.set(url, a);
-    }
+    if (runtimeState.scanDebounceTimer) clearTimeout(runtimeState.scanDebounceTimer);
+    runtimeState.scanDebounceTimer = setTimeout(scanAndEnqueue, CONFIG.debounceScanMs);
+  }
 
-    for (const [url, a] of uniq.entries()) {
-      const card = findCardContainer(a);
-      if (!card) continue;
-      if (card.querySelector(".ks-extraBox")) continue;
+  function scanAndEnqueue() {
+    if (!runtimeState.enabled) return;
 
-      const schedule = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
-      schedule(() => enqueue(url, card));
+    const uniqueLinks = getUniqueDetailsLinksOnPage();
+
+    for (const [detailsUrl, anchor] of uniqueLinks.entries()) {
+      const container = findListingContainer(anchor);
+      if (!container) continue;
+      if (container.querySelector(".ks-extraBox")) continue;
+
+      const runWhenIdle = window.requestIdleCallback || ((fn) => setTimeout(fn, 0));
+      runWhenIdle(() => enqueueJob(detailsUrl, container));
     }
   }
 
-  log("Initialized on", location.href);
-  scanAndQueue();
+  function startDomObserver() {
+    if (runtimeState.mutationObserver) return;
 
-  const mo = new MutationObserver(() => scanAndQueue());
-  mo.observe(document.documentElement, { childList: true, subtree: true });
+    scanAndEnqueue();
+
+    runtimeState.mutationObserver = new MutationObserver(scheduleScan);
+    runtimeState.mutationObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  function stopDomObserver() {
+    runtimeState.mutationObserver?.disconnect();
+    runtimeState.mutationObserver = null;
+
+    if (runtimeState.scanDebounceTimer) clearTimeout(runtimeState.scanDebounceTimer);
+    runtimeState.scanDebounceTimer = null;
+  }
+
+  function setEnabled(isEnabled) {
+    runtimeState.enabled = Boolean(isEnabled);
+
+    if (!runtimeState.enabled) {
+      stopDomObserver();
+      runtimeState.jobQueue.length = 0;
+      removeAllInjectedUi();
+      log("Disabled on page");
+      return;
+    }
+
+    log("Enabled on page");
+    startDomObserver();
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || typeof message !== "object") return;
+
+    if (message.type === "BILASOLUR_SET_ENABLED") {
+      setEnabled(message.enabled);
+      sendResponse?.({ ok: true });
+      return true;
+    }
+  });
+
+  (async () => {
+    try {
+      const { enabled } = await chrome.storage.local.get(CONFIG.storageDefaults);
+      setEnabled(enabled);
+      log("Initialized:", location.href, "enabled =", runtimeState.enabled);
+    } catch (e) {
+      setEnabled(CONFIG.storageDefaults.enabled);
+      warn("Storage read failed; defaulting enabled =", CONFIG.storageDefaults.enabled, e);
+    }
+  })();
 })();

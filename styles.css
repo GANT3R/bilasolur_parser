@@ -2,7 +2,7 @@
   margin-top: 6px;
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(0,0,0,0.04);
+  background: rgba(0, 0, 0, 0.04);
   font-size: 12.5px;
   line-height: 1.35;
 }
@@ -33,12 +33,14 @@
   height: 10px;
   margin-right: 6px;
   border-radius: 50%;
-  border: 2px solid rgba(0,0,0,0.2);
-  border-top-color: rgba(0,0,0,0.55);
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top-color: rgba(0, 0, 0, 0.55);
   animation: ks-spin 0.8s linear infinite;
   vertical-align: -2px;
 }
 
 @keyframes ks-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
